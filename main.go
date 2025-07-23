@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -26,8 +27,9 @@ func main() {
 }
 
 type Model struct {
-	Entries []os.DirEntry
-	Pipe    *os.File
+	Entries   []os.DirEntry
+	Pipe      *os.File
+	TextInput textinput.Model
 
 	command   string
 	cursorPos int
@@ -41,6 +43,8 @@ func initialModel(pipe *os.File) Model {
 	}
 
 	model.command = "cd ."
+	model.TextInput = textinput.New()
+
 	model.Pipe = pipe
 	model.Entries, err = os.ReadDir(cwd)
 	if err != nil {
@@ -55,28 +59,60 @@ func (model Model) Init() tea.Cmd {
 }
 
 func (model Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "ctrl+c", "q", "esc":
-			fmt.Fprintln(model.Pipe, model.command)
-			return model, tea.Quit
-		case "enter":
-			model = model.HandleEnter()
-		case "up", "k":
-			if model.cursorPos > 0 {
-				model.cursorPos--
-			}
-		case "down", "j":
-			if model.cursorPos < len(model.Entries) {
-				model.cursorPos++
+	shouldQuit := false
+	if model.TextInput.Focused() {
+		model, shouldQuit = model.UpdateTextInput(msg)
+	} else {
+		switch msg := msg.(type) {
+		case tea.KeyMsg:
+			switch msg.String() {
+			case "ctrl+c", "q", "esc":
+				shouldQuit = true
+			case "enter":
+				model, shouldQuit = model.HandleEnter()
+			case "up", "k":
+				if model.cursorPos > 0 {
+					model.cursorPos--
+				}
+			case "down", "j":
+				if model.cursorPos < len(model.Entries) {
+					model.cursorPos++
+				}
+			case "n", "t":
+				model.TextInput.Focus()
 			}
 		}
 	}
-	return model, nil
+
+	if shouldQuit {
+		fmt.Fprintln(model.Pipe, model.command)
+		return model, tea.Quit
+	} else {
+		return model, nil
+	}
 }
 
-func (model Model) HandleEnter() Model {
+func (model Model) UpdateTextInput(msg tea.Msg) (Model, bool) {
+	switch msg := msg.(type) {
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "enter":
+			fileName := model.TextInput.Value()
+			model.command += "\nnvim " + fileName
+			return model, true
+		case "esc":
+			model.TextInput.SetValue("")
+			model.TextInput.Blur()
+		case "ctrl+c":
+			return model, true
+		default:
+			model.TextInput, _ = model.TextInput.Update(msg)
+		}
+	}
+	return model, false
+}
+
+func (model Model) HandleEnter() (Model, bool) {
 	var fileName string
 	var isDir bool
 	if model.cursorPos == 0 {
@@ -103,8 +139,11 @@ func (model Model) HandleEnter() Model {
 			panic(err)
 		}
 		model.cursorPos = 0
+		return model, false
+	} else {
+		model.command += "\nnvim " + fileName
+		return model, true
 	}
-	return model
 }
 
 func (model Model) View() string {
@@ -119,5 +158,6 @@ func (model Model) View() string {
 		}
 		res += entry.Name() + "\n"
 	}
+	res += "\n\n" + model.TextInput.View()
 	return res
 }
